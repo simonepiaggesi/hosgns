@@ -7,7 +7,9 @@ The `data/` folder contains preprocessed time-varying proximity data (with the n
 The `code/` folder contains Jupyter notebooks to execute the method on the empirical datasets:
 1. [MakeVariousSupraNetworks](code/MakeVariousSupraNetworks.ipynb): To build and save networkx supra-adjacency graphs.
 2. [MakeVariousSupraSparseTensors](code/MakeVariousSupraSparseTensors.ipynb): To build co-occurrence tensors from supra-adjacency graphs.
-
+3. - [hosgns_3Way_Stat](code/hosgns_3Way_Stat.ipynb)
+   - [hosgns_4Way_Dyn](code/hosgns_4Way_Dyn.ipynb)
+   - [hosgns_4Way_StatDyn](code/hosgns_4Way_StatDyn.ipynb) To embed different higher-order representations and test them in downstream tasks.
 
 ## References
 [1]
