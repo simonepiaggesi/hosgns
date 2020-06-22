@@ -250,7 +250,7 @@ def get_infection_label(diff_model, beta, mu, pat_active_time, dataset, aggr_tim
         except ValueError:
             return None
     
-    file_name = '../data/spreading/%s_%s_beta%s_mu%s_run%s_%s.csv' % \
+    file_name = '../data/spreading/%s_%s_beta%s_mu%s_run%s_%s.csv.gz' % \
                 (diff_model, dataset, '{:.4f}'.format(beta), '{:.4f}'.format(mu), irun, aggr_time)
     exists = os.path.isfile(file_name)
     if exists:  
