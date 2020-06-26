@@ -12,6 +12,6 @@ The `code/` folder contains Jupyter notebooks to execute the method on the empir
    - [hosgns_4Way_StatDyn](code/hosgns_4Way_StatDyn.ipynb) 
 
 ## References
-[1] Simone Piaggesi and André Panisson (2020), Time-varying Graph Representation Learning via Higher-Order Skip-Gram with Negative Sampling. arXiv preprint arXiv:2006.14330
+[1] Simone Piaggesi and André Panisson (2020). Time-varying Graph Representation Learning via Higher-Order Skip-Gram with Negative Sampling. arXiv preprint arXiv:2006.14330
 
 [2] Cattuto, C., Van den Broeck, W., Barrat, A., Colizza, V., Pinton, J. F., & Vespignani, A. (2010). Dynamics of person-to-person interactions from distributed RFID sensor networks. PloS one, 5(7), e11596.
