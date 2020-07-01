@@ -71,17 +71,18 @@ class HOSGNSSolver:
     '''
     def __init__(self, tensor, marginals, active_events_list,
                  emb_dim,iters, batch_size, negative_samples,
-                 learning_rate, weight_tying=False):
+                 learning_rate, warmup_steps=0, weight_tying=False):
         self.tensor = tensor # probabilities of positivie examples (higher order tensor reshaped to a dense or csr matrix)
         self.d = emb_dim # embedding dimension
         self.active_ijk = active_events_list # list of active elements of axis 0
         self.n_iters = iters # number of training iterations
+        self.warmup_steps = warmup_steps
         self.batch_size = batch_size # number of examples sampled (positive and negative)
         self.k_neg = negative_samples # negative sampling constant
         self.lr = learning_rate
         self.marginals = marginals # tuple of marginal probabilities for negative examples
         self.order = len(marginals)
-        self.vsizes = [m.shape[0] for m in marginals # sizes of each axis
+        self.vsizes = [m.shape[0] for m in marginals] # sizes of each axis
 
         self.wt = weight_tying # boolean variable to make weight tying
         self.sp = scipy.sparse.issparse(self.tensor)
@@ -140,6 +141,21 @@ class HOSGNSSolver:
         print_sg = 'sg' in print_loss.split('-')
 
         bce = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.SUM)
+        
+        def make_warmup_step():
+            optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
+
+            @tf.function
+            def warmup_minibatch(scope_model, batch):
+                with tf.GradientTape() as tape:
+                    y_pred = scope_model(batch)[:, tf.newaxis]
+                    loss = (y_pred + 4)**2
+                gradients = tape.gradient(loss, scope_model.trainable_variables)
+                optimizer.apply_gradients(zip(gradients, scope_model.trainable_variables))
+
+            return warmup_minibatch
+        
+        warmup_minibatch = make_warmup_step()
 
         def make_train_step():
             optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
@@ -177,10 +193,21 @@ class HOSGNSSolver:
         estart = time.time()
 
         losses = {'tf':[], 'sg':[]}
+        
+        if self.warmup_steps > 0:
+            print('Warmup...')
+            for i in range(self.warmup_steps):
+                samples = np.concatenate(
+                    [np.random.choice(self.vsizes[i], size=(self.batch_size*2, 1))
+                     for i in range(self.order)], axis=1)
+                batch_tuple = tf.tuple([samples[:,i] for i in range(self.order)])
+
+                warmup_minibatch(self.model, batch_tuple)
 
         batch_labels = tf.concat([tf.ones((self.batch_size,1)), tf.zeros((self.batch_size,1))], axis=0)
         batch_weights = tf.concat([tf.ones((self.batch_size,)), tf.ones((self.batch_size,))*self.k_neg], axis=0)
 
+        print('Training...')
         for i in range(self.n_iters+1):
 
             active_events =  np.random.choice(nr_active, size=self.batch_size, p=self.nijk)
