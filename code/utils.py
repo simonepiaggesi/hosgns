@@ -254,7 +254,7 @@ def get_infection_label(diff_model, beta, mu, pat_active_time, dataset, aggr_tim
                 (diff_model, dataset, '{:.4f}'.format(beta), '{:.4f}'.format(mu), irun, aggr_time)
     exists = os.path.isfile(file_name)
     if exists:  
-        infection_data = open(file_name,'r')
+        infection_data = file_name # open(file_name,'r')
         inf_labels = pd.read_csv(infection_data, sep = '\t', header = None, names = ['node', 'tslice', 't', 'state'])
         #inf_labels.loc[:,'tslice'] = np.floor((inf_labels.t - inf_labels.t.iloc[0]) / aggr_time)
         #inf_labels2 = inf_labels.sort_values(by = 't').groupby(['node', 'tslice']).last().reset_index()
@@ -284,9 +284,11 @@ def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_lis
     -------
     list of -n_splits- dictionaries containing results of logistic regressions
     '''
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
     
-    nodes_idx = np.random.permutation(np.unique([n for n,t in node_active_list]))
-    times_idx = np.random.permutation(np.unique([t for n,t in node_active_list]))
+    nodes_idx = random_state.permutation(np.unique([n for n,t in node_active_list]))
+    times_idx = random_state.permutation(np.unique([t for n,t in node_active_list]))
     
     df_active = pd.DataFrame(node_active_list, columns=['i', 'tslice'])
     df_active.reset_index(inplace=True)
@@ -294,8 +296,8 @@ def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_lis
     results_list = []              
     for s in range(n_splits):
                           
-        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=None)
-        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=None)
+        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
+        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
         
         train_df = pd.DataFrame(cartesian((nodes_train, times_train)), columns=['i', 'tslice'])
         test_df = pd.DataFrame(cartesian((nodes_test, times_test)), columns=['i', 'tslice'])
