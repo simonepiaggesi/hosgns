@@ -71,12 +71,13 @@ class HOSGNSSolver:
     '''
     def __init__(self, tensor, marginals, active_events_list,
                  emb_dim,iters, batch_size, negative_samples,
-                 learning_rate, warmup_steps=0, weight_tying=False):
+                 learning_rate, warmup_steps=0, weight_tying=False, random_state=None):
         self.tensor = tensor # probabilities of positivie examples (higher order tensor reshaped to a dense or csr matrix)
         self.d = emb_dim # embedding dimension
         self.active_ijk = active_events_list # list of active elements of axis 0
         self.n_iters = iters # number of training iterations
         self.warmup_steps = warmup_steps
+        self.random_state = random_state
         self.batch_size = batch_size # number of examples sampled (positive and negative)
         self.k_neg = negative_samples # negative sampling constant
         self.lr = learning_rate
@@ -91,6 +92,10 @@ class HOSGNSSolver:
             self.nijk = self.tensor[self.active_ijk, :].sum(axis=1).A.ravel()
         else:
             self.nijk = self.tensor[self.active_ijk, :].sum(axis=1)
+            
+        if not isinstance(self.random_state, np.random.RandomState):
+            self.random_state = np.random.RandomState(self.random_state)
+        tf.random.set_seed(self.random_state.get_state()[1][0])
 
         # make the inititalization function for the embeddings (normal distribution)
         nwi = lambda v,e: tf.random.normal((v,e), 0.0, 1.0/e)
@@ -116,7 +121,7 @@ class HOSGNSSolver:
         den = self.marginals[0][samples[0]]
         for i in range(1, self.order):
             den = np.tensordot(den, self.marginals[i][samples[i]], axes=0)
-        PMI_np = np.log(num.ravel()/den.ravel())
+        PMI_np = np.log(num.ravel()/den.ravel() + 1e-30)
 
         batch = cartesian(samples)
         return  np.sum(np.abs(sigmoid(PMI_np - np.log(self.k_neg))\
@@ -136,6 +141,8 @@ class HOSGNSSolver:
 
         losses : dictionary of losses values every 'print_every' steps
         '''
+        
+        random_state = self.random_state
 
         print_tf = 'tf' in print_loss.split('-')
         print_sg = 'sg' in print_loss.split('-')
@@ -198,7 +205,7 @@ class HOSGNSSolver:
             print('Warmup...')
             for i in range(self.warmup_steps):
                 samples = np.concatenate(
-                    [np.random.choice(self.vsizes[i], size=(self.batch_size*2, 1))
+                    [random_state.choice(self.vsizes[i], size=(self.batch_size*2, 1))
                      for i in range(self.order)], axis=1)
                 batch_tuple = tf.tuple([samples[:,i] for i in range(self.order)])
 
@@ -210,23 +217,23 @@ class HOSGNSSolver:
         print('Training...')
         for i in range(self.n_iters+1):
 
-            active_events =  np.random.choice(nr_active, size=self.batch_size, p=self.nijk)
+            active_events =  random_state.choice(nr_active, size=self.batch_size, p=self.nijk)
 
             #sparse cumsum
             if self.sp:
                 cs_l_ijk = (tensor[active_events].toarray() / self.nijk[active_events, np.newaxis]).cumsum(axis=1)
                 active_cotimes = (cs_l_ijk >
-                                  np.random.rand(self.batch_size)[:,np.newaxis]).argmax(axis=1)
+                                  random_state.rand(self.batch_size)[:,np.newaxis]).argmax(axis=1)
             #dense cumsum
             else:
                 cs_l_ijk = (tensor / self.nijk[:, np.newaxis]).cumsum(axis=1)
                 active_cotimes = (cs_l_ijk[active_events] >
-                                  np.random.rand(self.batch_size)[:,np.newaxis]).argmax(axis=1)
+                                  random_state.rand(self.batch_size)[:,np.newaxis]).argmax(axis=1)
 
             pos_samples = np.concatenate((active_tuples[active_events], active_cotimes[:,np.newaxis]), axis=1)
 
             neg_samples = np.concatenate(
-                [np.random.choice(self.vsizes[i], size=(self.batch_size, 1), p=self.marginals[i])
+                [random_state.choice(self.vsizes[i], size=(self.batch_size, 1), p=self.marginals[i])
                  for i in range(self.order)], axis=1)
 
             pos_neg = np.concatenate((pos_samples, neg_samples), axis=0)
