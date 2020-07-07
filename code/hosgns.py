@@ -150,13 +150,14 @@ class HOSGNSSolver:
         bce = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.SUM)
         
         def make_warmup_step():
-            optimizer = tf.keras.optimizers.Adam(learning_rate=self.lr)
+            warmup_lr = tf.keras.optimizers.schedules.PolynomialDecay(0.05, self.warmup_steps)
+            optimizer = tf.keras.optimizers.Adam(learning_rate=warmup_lr)
 
             @tf.function
             def warmup_minibatch(scope_model, batch):
                 with tf.GradientTape() as tape:
                     y_pred = scope_model(batch)[:, tf.newaxis]
-                    loss = (y_pred + 4)**2
+                    loss = (y_pred + 2)**2
                 gradients = tape.gradient(loss, scope_model.trainable_variables)
                 optimizer.apply_gradients(zip(gradients, scope_model.trainable_variables))
 
@@ -213,11 +214,20 @@ class HOSGNSSolver:
 
         batch_labels = tf.concat([tf.ones((self.batch_size,1)), tf.zeros((self.batch_size,1))], axis=0)
         batch_weights = tf.concat([tf.ones((self.batch_size,)), tf.ones((self.batch_size,))*self.k_neg], axis=0)
+        
+        def active_events_generator_fn(n, size, p, max_entries=10**6):
+            cycles = int(max_entries/size)+1
+            while True:
+                numbers = random_state.choice(n, size=size*cycles, p=p)
+                for i in range(cycles):
+                    yield numbers[i*size:(i+1)*size]
+                
+        active_events_generator = active_events_generator_fn(nr_active, size=self.batch_size, p=self.nijk)
 
         print('Training...')
         for i in range(self.n_iters+1):
 
-            active_events =  random_state.choice(nr_active, size=self.batch_size, p=self.nijk)
+            active_events =  next(active_events_generator) #(nr_active, size=self.batch_size, p=self.nijk)
 
             #sparse cumsum
             if self.sp:
