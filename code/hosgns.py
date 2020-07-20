@@ -157,7 +157,7 @@ class HOSGNSSolver:
             def warmup_minibatch(scope_model, batch):
                 with tf.GradientTape() as tape:
                     y_pred = scope_model(batch)[:, tf.newaxis]
-                    loss = (y_pred + 2)**2
+                    loss = (y_pred + np.log(self.k_neg))**2
                 gradients = tape.gradient(loss, scope_model.trainable_variables)
                 optimizer.apply_gradients(zip(gradients, scope_model.trainable_variables))
 
