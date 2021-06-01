@@ -20,6 +20,55 @@ from sklearn.utils.extmath import cartesian
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
+def make_random_walks_from_supra_allnodes_blockdiag(supra_H_und, window_size):
+    
+    '''
+    Compute co-occurrence probabilities over random walks, passing into block diagonal matrix, 
+    returning all couples (w_t, c_s).
+    
+    Parameters
+    ----------
+    supra_H_und : undirected networkx supra-adjacency graph
+    window_size : contexts widonw over random walks
+    
+    Returns
+    -------
+    Pij : scipy sparse matrix of dimensions |V||T| x |V||T|
+    '''
+    
+    node_name = list(supra_H_und.nodes())
+    NR_NODES = np.unique([int(n_node.split('-')[0]) for n_node in node_name]).shape[0]
+    NR_TIMES = np.unique([int(n_node.split('-')[1]) for n_node in node_name]).shape[0]
+
+    components_nodelist = [list(supra_H_und.subgraph(n0).nodes()) for n0 in nx.connected_components(supra_H_und)]
+    components_nodelist = [n0 for l in components_nodelist for n0 in l]
+    
+    G = nx.to_scipy_sparse_matrix(supra_H_und, nodelist=components_nodelist, format='csr', dtype=np.float32)
+    volG = scipy.sparse.csr_matrix.sum(G)
+    dout = np.array(list(dict(supra_H_und.degree(weight='weight', nbunch=components_nodelist)).values()))
+
+    invD = scipy.sparse.diags(diagonals=(dout+1e-16)**(-1), format='csr', dtype=np.float32) 
+    P = invD @ G
+
+    D = scipy.sparse.diags(diagonals=dout, format='csr', dtype=np.float32) 
+    Pij = D @ P + P.T @ D
+    if window_size > 1:
+        Pr = P.copy()
+        for r in range(window_size-1):
+            Pr = Pr @ P
+            Pij += D @ Pr + Pr.T @ D
+    Pij /= 2 * window_size * volG
+    
+    
+    ordered_nodelist = list(it.product(range(NR_NODES), range(NR_TIMES)))
+    df_ordered_nodelist = pd.DataFrame(ordered_nodelist, columns = ['i', 'tslice']).astype(int)
+    df_components_nodelist = pd.DataFrame([n0.split('-') for n0 in components_nodelist], columns = ['i', 'tslice']).reset_index().astype(int)
+    
+    return_index = df_ordered_nodelist.merge(df_components_nodelist,\
+                            on=['i', 'tslice'], how='left').loc[:,'index'].values
+    
+    return Pij[np.ix_(return_index, return_index)]#Pij[return_index_row, return_index_col]
+
 def make_random_walks_from_supra_allnodes(supra_H_und, window_size):
     '''
     Compute co-occurrence probabilities over random walks, returning all couples (w_t, c_s).
@@ -278,7 +327,7 @@ def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_lis
     n_splits : number of train-test splits
     starting_test_size : fraction of nodes (or times) used for test sets
     node_active_list : list of tuples (node, time) with the same ordering as X and y
-    random_state : random seed for logistic regression
+    random_state : random seed for splitting
     
     Returns
     -------
@@ -287,8 +336,8 @@ def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_lis
     if not isinstance(random_state, np.random.RandomState):
         random_state = np.random.RandomState(random_state)
     
-    nodes_idx = random_state.permutation(np.unique([n for n,t in node_active_list]))
-    times_idx = random_state.permutation(np.unique([t for n,t in node_active_list]))
+    nodes_idx = np.unique([n for n,t in node_active_list])
+    times_idx = np.unique([t for n,t in node_active_list])
     
     df_active = pd.DataFrame(node_active_list, columns=['i', 'tslice'])
     df_active.reset_index(inplace=True)
@@ -319,7 +368,7 @@ def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_lis
 
 #LINK RECONSTRUCTION
 
-def build_dataset(nodes_,contexts_,times_, df_events, df_active):
+def build_dataset_LR(nodes_,contexts_,times_, df_events, df_active, random_state):
     
     '''
     Build a balanced set of positive-negative events (i,j,k) randomly.
@@ -331,11 +380,14 @@ def build_dataset(nodes_,contexts_,times_, df_events, df_active):
     times_ : set of indices k
     df_events : pandas dataframe of events (i,j,tslice,weight) 
     df_active : pandas dataframe of active noded (i,tslice)
+    random_state : random seed for negative events
     
     Returns
     -------
     dataframe of events (i,j,tslice,label) 
     '''
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
     
     #all possible combinations
     df_ = pd.DataFrame(cartesian((nodes_, contexts_, times_)), columns=['i', 'j', 'tslice'])
@@ -357,12 +409,12 @@ def build_dataset(nodes_,contexts_,times_, df_events, df_active):
     del df_['weight']
     
     #make balanced labels
-    df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum())])\
+    df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(), random_state=random_state)])\
                 .sample(frac=1).reset_index(drop=True)
     
     return df_.astype(np.int32)
 
-def make_train_test_splits(n_splits, starting_test_size, node_active_list, df_events):
+def make_train_test_splits_LR(n_splits, starting_test_size, node_active_list, df_events, random_state):
     
     '''
     Make node-node-time splits for link reconstruction.
@@ -373,14 +425,17 @@ def make_train_test_splits(n_splits, starting_test_size, node_active_list, df_ev
     starting_test_size : fraction of nodes (or times) used for test sets
     node_active_list : list of tuples (node, time)
     df_events : pandas dataframe of events (i,j,tslice,weight)
+    random_state : random seed for splitting
     
     Returns
     -------
     list of -n_splits- dictionaries containing train-test indices for embedding vectors
     '''
-    
-    nodes_idx = np.random.permutation(np.unique([n for n,t in node_active_list]))
-    times_idx = np.random.permutation(np.unique([t for n,t in node_active_list]))
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
+        
+    nodes_idx = np.unique([n for n,t in node_active_list])
+    times_idx = np.unique([t for n,t in node_active_list])
     
     df_active = pd.DataFrame(node_active_list, columns=['i', 'tslice'])
     df_active.loc[:, 'j'] =df_active.loc[:, 'i'] 
@@ -389,13 +444,176 @@ def make_train_test_splits(n_splits, starting_test_size, node_active_list, df_ev
     splits_list = []              
     for s in range(n_splits):
              
-        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=None)
-        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=None)
+        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
+        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
         
         train_df = build_dataset(nodes_train, nodes_train, times_train, \
-                                 df_events, df_active.loc[:, ['i','j','tslice']])
+                                 df_events, df_active.loc[:, ['i','j','tslice']], random_state)
         test_df = build_dataset(nodes_test, nodes_test, times_test, \
-                                 df_events, df_active.loc[:, ['i','j','tslice']])
+                                 df_events, df_active.loc[:, ['i','j','tslice']], random_state)
+        
+        y_train = train_df.label.values
+        y_test = test_df.label.values
+        
+        emb1_train_idx = train_df.i.values
+        emb2_train_idx = train_df.j.values
+        emb3_train_idx = train_df.tslice.values
+        
+        emb1_test_idx = test_df.i.values
+        emb2_test_idx = test_df.j.values
+        emb3_test_idx = test_df.tslice.values
+        
+        splits_list.append({'train':(emb1_train_idx, emb2_train_idx, emb3_train_idx, y_train),
+                            'test': (emb1_test_idx, emb2_test_idx, emb3_test_idx, y_test)})
+                          
+    return splits_list
+
+#LINK PREDICTION
+
+def build_dataset_train_LP(nodes_, contexts_, times_, df_events, df_active, random_state):
+    
+    '''
+    Build a balanced set of positive-negative events (i,j,k) randomly.
+    
+    Parameters
+    ----------
+    nodes_ : set of indices i
+    contexts_ : set of indices j
+    times_ : set of indices k
+    df_events : pandas dataframe of events (i,j,tslice,weight) 
+    df_active : pandas dataframe of active noded (i,tslice)
+    random_state : random seed for negative events
+    
+    Returns
+    -------
+    dataframe of events (i,j,tslice,label) 
+    '''
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
+        
+    df_links, df_drop = df_events 
+    
+    #all possible combinations
+    df_ = pd.DataFrame(cartesian((nodes_, contexts_, times_)), columns=['i', 'j', 'tslice'])
+    
+    #remove self-loops and sort ij along rows 
+    df_ = df_[df_.i!=df_.j]
+    s = df_['i'] > df_['j']
+    df_.loc[s, ['i','j']] = df_.loc[s, ['j','i']].values
+    df_.drop_duplicates(['i','j','tslice'], inplace=True)
+    
+    #remove links with inactive nodes
+    df_ = df_.merge(df_active, on=['i', 'tslice'], suffixes=('', 'x'))\
+             .merge(df_active, on=['j', 'tslice'], suffixes=('', 'x'))
+    df_ = df_.loc[:, ['i','j','tslice']]
+    
+    #remove dropped links
+    df_ = df_.merge(df_drop, on=['i', 'j', 'tslice'], how='left').loc[lambda df: df.weight.isnull()]
+    del df_['weight']
+    
+    #add labels
+    df_ = df_.merge(df_links.loc[:, ['i', 'j', 'tslice', 'weight']], on=['i', 'j', 'tslice'], how='left')
+    df_.loc[:, 'label'] = ~df_.weight.isnull()
+    del df_['weight']
+    
+    #make balanced labels
+    df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(), random_state=random_state)])\
+                .sample(frac=1).reset_index(drop=True)
+    
+    return df_.astype(np.int32)
+
+
+def build_dataset_test_LP(nodes_,contexts_,times_, df_events, df_active, random_state):
+    
+    '''
+    Build a balanced set of positive-negative events (i,j,k) randomly.
+    
+    Parameters
+    ----------
+    nodes_ : set of indices i
+    contexts_ : set of indices j
+    times_ : set of indices k
+    df_events : pandas dataframe of events (i,j,tslice,weight) 
+    df_active : pandas dataframe of active noded (i,tslice)
+    random_state : random seed for negative events
+    
+    Returns
+    -------
+    dataframe of events (i,j,tslice,label) 
+    '''
+    
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
+    
+    df_links, df_drop = df_events 
+    
+    #all possible combinations
+    df_ = pd.DataFrame(cartesian((nodes_, contexts_, times_)), columns=['i', 'j', 'tslice'])
+    
+    #remove self-loops and sort ij along rows 
+    df_ = df_[df_.i!=df_.j]
+    s = df_['i'] > df_['j']
+    df_.loc[s, ['i','j']] = df_.loc[s, ['j','i']].values
+    df_.drop_duplicates(['i','j','tslice'], inplace=True)
+    
+    #remove links with inactive nodes
+    df_ = df_.merge(df_active, on=['i', 'tslice'], suffixes=('', 'x'))\
+             .merge(df_active, on=['j', 'tslice'], suffixes=('', 'x'))
+    df_ = df_.loc[:, ['i','j','tslice']]
+    
+    #remove active links
+    df_ = df_.merge(df_links, on=['i', 'j', 'tslice'], how='left').loc[lambda df: df.weight.isnull()]
+    del df_['weight']
+    
+    #add labels
+    df_ = df_.merge(df_drop.loc[:, ['i', 'j', 'tslice', 'weight']], on=['i', 'j', 'tslice'], how='left')
+    df_.loc[:, 'label'] = ~df_.weight.isnull()
+    del df_['weight']
+    
+    #make balanced labels
+    df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(), random_state=random_state)])\
+                .sample(frac=1).reset_index(drop=True)
+    
+    return df_.astype(np.int32)
+
+def make_train_test_splits_LP(n_splits, starting_test_size, node_active_list, df_events, random_state):
+    
+        '''
+    Make node-node-time splits for link prediction.
+    
+    Parameters
+    ----------
+    n_splits : number of train-test splits
+    starting_test_size : fraction of nodes (or times) used for test sets
+    node_active_list : list of tuples (node, time)
+    df_events : pandas dataframe of events (i,j,tslice,weight)
+    random_state : random seed for splitting
+    
+    Returns
+    -------
+    list of -n_splits- dictionaries containing train-test indices for embedding vectors
+    '''
+    
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
+    
+    nodes_idx = np.unique([n for n,t in node_active_list])
+    times_idx = np.unique([t for n,t in node_active_list])
+    
+    df_active = pd.DataFrame(node_active_list, columns=['i', 'tslice'])
+    df_active.loc[:, 'j'] = df_active.loc[:, 'i'] 
+    df_active.reset_index(inplace=True)
+    
+    splits_list = []              
+    for spl in n_splits:
+        
+        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
+        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
+        
+        train_df = build_dataset_train(nodes_train, nodes_train, times_train, \
+                                 df_events, df_active.loc[:, ['i','j','tslice']], random_state)
+        test_df = build_dataset_test(nodes_test, nodes_test, times_test, \
+                                 df_events, df_active.loc[:, ['i','j','tslice']], random_state)
         
         y_train = train_df.label.values
         y_test = test_df.label.values
