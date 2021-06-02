@@ -231,6 +231,45 @@ def load_temp_data(dataset, aggr_time=10*60):
     
     return partial_times, s_temp_net, df_tnet
 
+def load_modified_temp_data(dataset, aggr_time=10*60):
+    '''
+    Preprocess partial temporal network data for link prediction.
+    
+    Parameters
+    ----------
+    dataset : ['LyonSchool', 'SFHH', 'LH10', 'InVS15', 'Thiers13']
+    aggr_time : time window scale (default 600 seconds)
+    
+    Returns
+    -------
+    partial_times : sorted list of time slices
+    s_temp_net : pandas series of events (i,j,tslice,weight) 
+    df_tnet : pandas dataframe of events (i,j,tslice,weight) 
+    '''
+    
+    df_temp_net = pd.read_csv(('../preprocessed/RemovedLinksTempNet/%s/tij_%s_7030_0.csv.gz' % (dataset,  dataset)),
+                        sep = ',', header = None,
+                        names = ['t', 'i', 'j'])
+    # compute slice each contact event belongs to
+    df_temp_net.loc[:,'tslice'] = np.floor((df_temp_net.t - df_temp_net.t.iloc[0]) / aggr_time)
+    # group over (slice, i, j), and compute number of contacts within time slice,
+    # regarded as "weight" for contacts in each time slice
+    
+    df_temp_net = df_temp_net[df_temp_net.i!=df_temp_net.j]
+    s = df_temp_net['i'] > df_temp_net['j']
+    df_temp_net.loc[s, ['i','j']] = df_temp_net.loc[s, ['j','i']].values
+    df_temp_net.drop_duplicates(['t','i','j'], inplace=True)
+    
+    s_temp_net = df_temp_net.groupby(['tslice','i','j']).size().rename('weight')
+    
+    # times for all temporal slices, note that it may have a big gap (return to home)
+    partial_times = sorted(list(s_temp_net.index.levels[0]))
+
+    # convenience: dataframe version of the series above
+    df_tnet = s_temp_net.reset_index()
+    
+    return partial_times, s_temp_net, df_tnet
+
 #NODE CLASSIFICATION
 
 def get_labels(dataset, pat_active_time):
@@ -365,6 +404,56 @@ def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_lis
                           
     return results_list
 
+def make_train_test_splits_NC(n_splits, starting_test_size, node_active_list, random_state):
+    
+    '''
+    Build node-time splits for node classification.
+    
+    Parameters
+    ----------
+    n_splits : number of train-test splits
+    starting_test_size : fraction of nodes (or times) used for test sets
+    node_active_list : list of tuples (node, time) with the same ordering as X and y
+    random_state : random seed for splitting
+    
+    Returns
+    -------
+    list of -n_splits- dictionaries containing train-test indices for embedding vectors
+    '''
+    if not isinstance(random_state, np.random.RandomState):
+        random_state = np.random.RandomState(random_state)
+    
+    nodes_idx = np.unique([n for n,t in node_active_list])
+    times_idx = np.unique([t for n,t in node_active_list])
+    
+    df_active = pd.DataFrame(node_active_list, columns=['i', 'tslice'])
+    df_active.reset_index(inplace=True)
+    
+    splits_list = []              
+    for s in range(n_splits):
+                          
+        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
+        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
+        
+        train_df = pd.DataFrame(cartesian((nodes_train, times_train)), columns=['i', 'tslice'])
+        test_df = pd.DataFrame(cartesian((nodes_test, times_test)), columns=['i', 'tslice'])
+        
+        train_df = df_active.merge(train_df, on=['i', 'tslice'])#.loc[:,'index'].values
+        test_df = df_active.merge(test_df, on=['i', 'tslice'])#.loc[:,'index'].values
+        
+        emb1_train_idx = train_df.i.values
+        emb2_train_idx = train_df.tslice.values
+        y_train_idx = train_df.loc[:,'index'].values
+        
+        emb1_test_idx = test_df.i.values
+        emb2_test_idx = test_df.tslice.values
+        y_test_idx = test_df.loc[:,'index'].values
+        
+        splits_list.append({'train':(emb1_train_idx, emb2_train_idx, y_train_idx),
+                            'test': (emb1_test_idx, emb2_test_idx, y_test_idx)})
+                          
+    return splits_list
+
 
 #LINK RECONSTRUCTION
 
@@ -409,8 +498,8 @@ def build_dataset_LR(nodes_,contexts_,times_, df_events, df_active, random_state
     del df_['weight']
     
     #make balanced labels
-    df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(), random_state=random_state)])\
-                .sample(frac=1).reset_index(drop=True)
+    df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(),random_state=random_state)])\
+                .sample(frac=1, random_state=random_state).reset_index(drop=True)
     
     return df_.astype(np.int32)
 
@@ -447,9 +536,9 @@ def make_train_test_splits_LR(n_splits, starting_test_size, node_active_list, df
         nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
         times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
         
-        train_df = build_dataset(nodes_train, nodes_train, times_train, \
+        train_df = build_dataset_LR(nodes_train, nodes_train, times_train, \
                                  df_events, df_active.loc[:, ['i','j','tslice']], random_state)
-        test_df = build_dataset(nodes_test, nodes_test, times_test, \
+        test_df = build_dataset_LR(nodes_test, nodes_test, times_test, \
                                  df_events, df_active.loc[:, ['i','j','tslice']], random_state)
         
         y_train = train_df.label.values
@@ -518,7 +607,7 @@ def build_dataset_train_LP(nodes_, contexts_, times_, df_events, df_active, rand
     
     #make balanced labels
     df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(), random_state=random_state)])\
-                .sample(frac=1).reset_index(drop=True)
+                .sample(frac=1, random_state=random_state).reset_index(drop=True)
     
     return df_.astype(np.int32)
 
@@ -572,13 +661,13 @@ def build_dataset_test_LP(nodes_,contexts_,times_, df_events, df_active, random_
     
     #make balanced labels
     df_ = pd.concat([df_[df_.label], df_[~df_.label].sample(n=df_.label.sum(), random_state=random_state)])\
-                .sample(frac=1).reset_index(drop=True)
+                .sample(frac=1, random_state=random_state).reset_index(drop=True)
     
     return df_.astype(np.int32)
 
 def make_train_test_splits_LP(n_splits, starting_test_size, node_active_list, df_events, random_state):
     
-        '''
+    '''
     Make node-node-time splits for link prediction.
     
     Parameters
@@ -605,14 +694,14 @@ def make_train_test_splits_LP(n_splits, starting_test_size, node_active_list, df
     df_active.reset_index(inplace=True)
     
     splits_list = []              
-    for spl in n_splits:
+    for s in range(n_splits):
         
         nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
         times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
         
-        train_df = build_dataset_train(nodes_train, nodes_train, times_train, \
+        train_df = build_dataset_train_LP(nodes_train, nodes_train, times_train, \
                                  df_events, df_active.loc[:, ['i','j','tslice']], random_state)
-        test_df = build_dataset_test(nodes_test, nodes_test, times_test, \
+        test_df = build_dataset_test_LP(nodes_test, nodes_test, times_test, \
                                  df_events, df_active.loc[:, ['i','j','tslice']], random_state)
         
         y_train = train_df.label.values

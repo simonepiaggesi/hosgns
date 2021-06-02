@@ -124,7 +124,7 @@ class HOSGNSSolver:
         PMI_np = np.log(num.ravel()/den.ravel() + 1e-30)
 
         batch = cartesian(samples)
-        return  np.sum(np.abs(sigmoid(PMI_np - np.log(self.k_neg))\
+        return  np.mean(np.abs(sigmoid(PMI_np - np.log(self.k_neg))\
             - sigmoid(self.model(tf.tuple([batch[:,i] for i in range(self.order)])))))
 
     def train(self, print_loss='sg', print_every=1):
@@ -173,7 +173,7 @@ class HOSGNSSolver:
             def train_minibatch(scope_model, batch, y_true, sample_weight):
                 with tf.GradientTape() as tape:
                     y_pred = tf.math.sigmoid(scope_model(batch))[:, tf.newaxis]
-                    loss = bce(y_true, y_pred, sample_weight)/self.batch_size
+                    loss = bce(y_true, y_pred, sample_weight)/(self.batch_size*(1+self.k_neg))
                 gradients = tape.gradient(loss, scope_model.trainable_variables)
                 optimizer.apply_gradients(zip(gradients, scope_model.trainable_variables))
                 train_loss(loss)
