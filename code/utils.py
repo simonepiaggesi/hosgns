@@ -198,7 +198,7 @@ def load_temp_data(dataset, aggr_time=10*60):
     
     Parameters
     ----------
-    dataset : ['LyonSchool', 'SFHH', 'LH10', 'InVS15', 'Thiers13']
+    dataset : ['LyonSchool', 'SFHH', 'LH10', 'InVS15', 'Thiers13'] or OpenABM datasets
     aggr_time : time window scale (default 600 seconds)
     
     Returns
@@ -207,11 +207,15 @@ def load_temp_data(dataset, aggr_time=10*60):
     s_temp_net : pandas series of events (i,j,tslice,weight) 
     df_tnet : pandas dataframe of events (i,j,tslice,weight) 
     '''
-    
-    df_temp_net = pd.read_csv(('../data/Data_SocioPatterns_20s_nonights/tij_%s.dat_nonights.dat' % dataset),
+    if dataset.split('-')[0]=='OpenABM':
+        df_temp_net = pd.read_csv(('../data/Data_OpenABM/%s.tar.gz' % dataset))\
+                                .rename(columns={'ID_1':'i', 'ID_2':'j', 'time':'t'})
+    else:
+        df_temp_net = pd.read_csv(('../data/Data_SocioPatterns_20s_nonights/tij_%s.dat_nonights.dat' % dataset),
                         sep = '\t', header = None,
                         names = ['t', 'i', 'j'])
     # compute slice each contact event belongs to
+    df_temp_net.sort_values('t', inplace=True)
     df_temp_net.loc[:,'tslice'] = np.floor((df_temp_net.t - df_temp_net.t.iloc[0]) / aggr_time)
     # group over (slice, i, j), and compute number of contacts within time slice,
     # regarded as "weight" for contacts in each time slice
@@ -237,7 +241,7 @@ def load_modified_temp_data(dataset, aggr_time=10*60):
     
     Parameters
     ----------
-    dataset : ['LyonSchool', 'SFHH', 'LH10', 'InVS15', 'Thiers13']
+    dataset : ['LyonSchool', 'SFHH', 'LH10', 'InVS15', 'Thiers13'] or OpenABM datasets
     aggr_time : time window scale (default 600 seconds)
     
     Returns
@@ -251,6 +255,7 @@ def load_modified_temp_data(dataset, aggr_time=10*60):
                         sep = ',', header = None,
                         names = ['t', 'i', 'j'])
     # compute slice each contact event belongs to
+    df_temp_net.sort_values('t', inplace=True)
     df_temp_net.loc[:,'tslice'] = np.floor((df_temp_net.t - df_temp_net.t.iloc[0]) / aggr_time)
     # group over (slice, i, j), and compute number of contacts within time slice,
     # regarded as "weight" for contacts in each time slice
@@ -354,63 +359,14 @@ def get_infection_label(diff_model, beta, mu, pat_active_time, dataset, aggr_tim
     else:
         return None
     
-def train_test_split_predict(X, y, n_splits, starting_test_size, node_active_list, random_state):
-    
-    '''
-    Perform node classification with node-time splits.
-    
-    Parameters
-    ----------
-    X : numpy array |V(T)|x d of node-time embeddings 
-    y : numpy array |V(T)|x d of node-time labels
-    n_splits : number of train-test splits
-    starting_test_size : fraction of nodes (or times) used for test sets
-    node_active_list : list of tuples (node, time) with the same ordering as X and y
-    random_state : random seed for splitting
-    
-    Returns
-    -------
-    list of -n_splits- dictionaries containing results of logistic regressions
-    '''
-    if not isinstance(random_state, np.random.RandomState):
-        random_state = np.random.RandomState(random_state)
-    
-    nodes_idx = np.unique([n for n,t in node_active_list])
-    times_idx = np.unique([t for n,t in node_active_list])
-    
-    df_active = pd.DataFrame(node_active_list, columns=['i', 'tslice'])
-    df_active.reset_index(inplace=True)
-    
-    results_list = []              
-    for s in range(n_splits):
-                          
-        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
-        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
-        
-        train_df = pd.DataFrame(cartesian((nodes_train, times_train)), columns=['i', 'tslice'])
-        test_df = pd.DataFrame(cartesian((nodes_test, times_test)), columns=['i', 'tslice'])
-        
-        embs_train_idx = df_active.merge(train_df, on=['i', 'tslice']).loc[:,'index'].values
-        embs_test_idx = df_active.merge(test_df, on=['i', 'tslice']).loc[:,'index'].values
-
-        model_clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, n_jobs=6, random_state=random_state))
-        y_test_pred = model_clf.fit(X[embs_train_idx], y[embs_train_idx]).predict(X[embs_test_idx])
-                          
-        test_result = {'f1_macro': f1_score(y[embs_test_idx], y_test_pred, average='macro'), \
-                       'f1_micro': f1_score(y[embs_test_idx], y_test_pred, average='micro')}
-        best_results = {'train_index': embs_train_idx,'test_index': embs_test_idx,\
-                        'Y_test': y[embs_test_idx], 'Y_pred': y_test_pred, 'test_result': test_result}
-        results_list.append(best_results)
-                          
-    return results_list
-
-def make_train_test_splits_NC(n_splits, starting_test_size, node_active_list, random_state):
+def make_train_test_splits_NC(y, n_splits, starting_test_size, node_active_list, random_state):
     
     '''
     Build node-time splits for node classification.
     
     Parameters
     ----------
+    y : numpy array |V(T)|x d of node-time labels
     n_splits : number of train-test splits
     starting_test_size : fraction of nodes (or times) used for test sets
     node_active_list : list of tuples (node, time) with the same ordering as X and y
@@ -431,26 +387,31 @@ def make_train_test_splits_NC(n_splits, starting_test_size, node_active_list, ra
     
     splits_list = []              
     for s in range(n_splits):
-                          
-        nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
-        times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
         
-        train_df = pd.DataFrame(cartesian((nodes_train, times_train)), columns=['i', 'tslice'])
-        test_df = pd.DataFrame(cartesian((nodes_test, times_test)), columns=['i', 'tslice'])
-        
-        train_df = df_active.merge(train_df, on=['i', 'tslice'])#.loc[:,'index'].values
-        test_df = df_active.merge(test_df, on=['i', 'tslice'])#.loc[:,'index'].values
-        
+        while(True):
+            nodes_train, nodes_test = train_test_split(nodes_idx, test_size=starting_test_size, random_state=random_state)
+            times_train, times_test = train_test_split(times_idx, test_size=starting_test_size, random_state=random_state)
+
+            train_df = pd.DataFrame(cartesian((nodes_train, times_train)), columns=['i', 'tslice'])
+            test_df = pd.DataFrame(cartesian((nodes_test, times_test)), columns=['i', 'tslice'])
+
+            train_df = df_active.merge(train_df, on=['i', 'tslice'])#.loc[:,'index'].values
+            test_df = df_active.merge(test_df, on=['i', 'tslice'])#.loc[:,'index'].values
+
+            y_train_idx = train_df.loc[:,'index'].values
+            y_test_idx = test_df.loc[:,'index'].values
+            
+            if np.unique(y[y_train_idx]).shape[0]>1:
+                break
+                
         emb1_train_idx = train_df.i.values
         emb2_train_idx = train_df.tslice.values
-        y_train_idx = train_df.loc[:,'index'].values
-        
+
         emb1_test_idx = test_df.i.values
         emb2_test_idx = test_df.tslice.values
-        y_test_idx = test_df.loc[:,'index'].values
-        
+
         splits_list.append({'train':(emb1_train_idx, emb2_train_idx, y_train_idx),
-                            'test': (emb1_test_idx, emb2_test_idx, y_test_idx)})
+                        'test': (emb1_test_idx, emb2_test_idx, y_test_idx)})
                           
     return splits_list
 
