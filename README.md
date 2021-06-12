@@ -19,8 +19,7 @@ The `code/` folder contains Jupyter notebooks to execute the method on presented
 
 ## Requirements
 
-The repository requires the libraries [GEM](https://github.com/palash1992/GEM) and [SNAP](https://github.com/snap-stanford/snap).
-Other required packages can be installed from `requirements.txt`. The code has been tested under Python 3.6.
+The repository required packages can be installed from `requirements.txt`. To run the code on OpenABM (last two notebooks) the libraries [GEM](https://github.com/palash1992/GEM) and [SNAP](https://github.com/snap-stanford/snap) are also needed. The code has been tested under Python 3.6.
 
 ## References
 
