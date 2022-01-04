@@ -89,9 +89,7 @@ class HOSGNSSampler:
         
         self.k_neg = negative_samples
         self.random_state = random_state
-        
-        self.random_state = random_state
-        
+                
         node_name = list(self.supra_G.nodes())
         node_index = {node:index for index, node in enumerate(node_name)}
         supra_H = nx.relabel_nodes(self.supra_G, node_index)
